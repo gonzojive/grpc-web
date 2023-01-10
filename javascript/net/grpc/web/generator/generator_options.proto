@@ -1,0 +1,12 @@
+syntax = "proto3";
+
+package com.github.grpc.grpc_web.generator;
+
+// ImportPaths
+message ImportPaths {
+    message Entry {
+        string proto_import_path = 1;
+        string js_import_path = 2;
+    }
+    repeated Entry entries = 1;
+}

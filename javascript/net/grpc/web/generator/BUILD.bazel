@@ -8,5 +8,17 @@ cc_binary(
     visibility = ["//visibility:public"],
     deps = [
         "@com_google_protobuf//:protoc_lib",
+        ":generator_options_cc_proto",
     ],
+)
+
+proto_library(
+    name = "generator_options_proto",
+    srcs = ["generator_options.proto"],
+    visibility = ["//visibility:public"],
+)
+
+cc_proto_library(
+    name = "generator_options_cc_proto",
+    deps = [":generator_options_proto"],
 )

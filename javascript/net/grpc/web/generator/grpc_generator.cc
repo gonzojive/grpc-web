@@ -23,6 +23,8 @@
 #include <google/protobuf/descriptor.pb.h>
 #include <google/protobuf/io/printer.h>
 #include <google/protobuf/io/zero_copy_stream.h>
+#include <google/protobuf/util/json_util.h>
+#include "javascript/net/grpc/web/generator/generator_options.pb.h"
 
 #include <algorithm>
 #include <iterator>
@@ -44,6 +46,8 @@ using google::protobuf::compiler::PluginMain;
 using google::protobuf::compiler::Version;
 using google::protobuf::io::Printer;
 using google::protobuf::io::ZeroCopyOutputStream;
+using com::github::grpc::grpc_web::generator::ImportPaths;
+using com::github::grpc::grpc_web::generator::ImportPaths_Entry;
 
 namespace grpc {
 namespace web {
@@ -81,6 +85,47 @@ const char* kKeyword[] = {
 
 // Edit the version here prior to release
 static const std::string GRPC_WEB_VERSION = "1.4.2";
+
+class GeneratorOptions {
+ public:
+  GeneratorOptions();
+
+  bool ParseFromOptions(const string& parameter, string* error);
+  bool ParseFromOptions(const std::vector<std::pair<string, string>>& options,
+                        string* error);
+
+  // Returns the name of the output file for |proto_file|.
+  string OutputFile(const string& proto_file) const;
+
+  string ImportPath(const FileDescriptor* generated_code_file, const FileDescriptor* dep_file) const;
+
+  string mode() const { return mode_; }
+  string plugins() const { return plugins_; }
+  ImportStyle import_style() const { return import_style_; }
+  bool generate_dts() const { return generate_dts_; }
+  bool generate_closure_es6() const { return generate_closure_es6_; }
+  bool multiple_files() const { return multiple_files_; }
+  bool goog_promise() const { return goog_promise_; }
+
+  // Checks that all of the proto imports can be imported properly based on
+  // the value of manaaged_import_mode.
+  bool CheckImports(const FileDescriptor* generated_code_file, string* error) const;
+
+ private:
+  string file_name_;
+  string mode_;
+  string plugins_;
+  ImportStyle import_style_;
+  bool generate_dts_;
+  bool generate_closure_es6_;
+  bool multiple_files_;
+  bool goog_promise_;
+  // Maps from proto import path to JS/TS import path of that file.
+  // If in managed_import_mode and a necessary import is not in this map,
+  // compilation fails.
+  std::map<string, string> proto_name_to_import_path_;
+  bool managed_import_mode_;
+};
 
 string GetProtocVersion(GeneratorContext* context) {
   Version compiler_version;
@@ -548,31 +593,32 @@ void PrintCommonJsMessagesDeps(Printer* printer, const FileDescriptor* file) {
   }
 }
 
-void PrintES6Imports(Printer* printer, const FileDescriptor* file) {
+void PrintES6Imports(Printer* printer, const FileDescriptor* file, const GeneratorOptions& options) {
   std::map<string, string> vars;
 
   printer->Print("import * as grpcWeb from 'grpc-web';\n\n");
 
   std::set<string> imports;
   for (const auto& entry : GetAllMessages(file)) {
-    const string& name = entry.second->file()->name();
-    string dep_filename = GetRootPath(file->name(), name) + StripProto(name);
+    const string& proto_filename = entry.second->file()->name();
+    string dep_filename =  options.ImportPath(file, entry.second->file());
     if (imports.find(dep_filename) != imports.end()) {
       continue;
     }
     imports.insert(dep_filename);
     // We need to give each cross-file import an alias.
-    printer->Print("import * as $alias$ from '$dep_filename$_pb'; // proto import: \"$proto_import$\"\n",
-                   "alias", ModuleAlias(name),
+    printer->Print("import * as $alias$ from '$dep_filename$_pb'; // proto import: \"$proto_filename$\"\n",
+                   "alias", ModuleAlias(proto_filename),
                    "dep_filename", dep_filename,
-                   "proto_import", name);
+                   "proto_filename", proto_filename);
   }
   printer->Print("\n\n");
 }
 
 void PrintTypescriptFile(Printer* printer, const FileDescriptor* file,
+                         const GeneratorOptions& options, 
                          std::map<string, string> vars) {
-  PrintES6Imports(printer, file);
+  PrintES6Imports(printer, file, options);
   for (int service_index = 0; service_index < file->service_count();
        ++service_index) {
     printer->Print("export class ");
@@ -768,8 +814,8 @@ void PrintGrpcWebDtsClientClass(Printer* printer, const FileDescriptor* file,
   }
 }
 
-void PrintGrpcWebDtsFile(Printer* printer, const FileDescriptor* file) {
-  PrintES6Imports(printer, file);
+void PrintGrpcWebDtsFile(Printer* printer, const FileDescriptor* file, const GeneratorOptions& options) {
+  PrintES6Imports(printer, file, options);
   PrintGrpcWebDtsClientClass(printer, file, "Client");
   PrintGrpcWebDtsClientClass(printer, file, "PromiseClient");
 }
@@ -940,11 +986,12 @@ void PrintProtoDtsFile(Printer* printer, const FileDescriptor* file) {
   printer->Print("import * as jspb from 'google-protobuf'\n\n");
 
   for (int i = 0; i < file->dependency_count(); i++) {
-    const string& name = file->dependency(i)->name();
+    const string& proto_filename = file->dependency(i)->name();
     // We need to give each cross-file import an alias.
-    printer->Print("import * as $alias$ from '$dep_filename$_pb';\n", "alias",
-                   ModuleAlias(name), "dep_filename",
-                   GetRootPath(file->name(), name) + StripProto(name));
+    printer->Print("import * as $alias$ from '$dep_filename$_pb'; // proto import: \"$proto_filename$\"\n",
+                   "alias", ModuleAlias(proto_filename),
+                   "dep_filename", GetRootPath(file->name(), proto_filename) + StripProto(proto_filename),
+                   "proto_filename", proto_filename);
   }
   printer->Print("\n\n");
 
@@ -1412,36 +1459,6 @@ void PrintGrpcWebClosureES6File(Printer* printer, const FileDescriptor* file) {
   }
 }
 
-class GeneratorOptions {
- public:
-  GeneratorOptions();
-
-  bool ParseFromOptions(const string& parameter, string* error);
-  bool ParseFromOptions(const std::vector<std::pair<string, string>>& options,
-                        string* error);
-
-  // Returns the name of the output file for |proto_file|.
-  string OutputFile(const string& proto_file) const;
-
-  string mode() const { return mode_; }
-  string plugins() const { return plugins_; }
-  ImportStyle import_style() const { return import_style_; }
-  bool generate_dts() const { return generate_dts_; }
-  bool generate_closure_es6() const { return generate_closure_es6_; }
-  bool multiple_files() const { return multiple_files_; }
-  bool goog_promise() const { return goog_promise_; }
-
- private:
-  string file_name_;
-  string mode_;
-  string plugins_;
-  ImportStyle import_style_;
-  bool generate_dts_;
-  bool generate_closure_es6_;
-  bool multiple_files_;
-  bool goog_promise_;
-};
-
 GeneratorOptions::GeneratorOptions()
     : file_name_(""),
       mode_(""),
@@ -1490,10 +1507,37 @@ bool GeneratorOptions::ParseFromOptions(
       plugins_ = option.second;
     } else if ("goog_promise" == option.first) {
       goog_promise_ = "True" == option.second;
+    } else if ("explicit_imports" == option.first) {
+      if (Lowercase(option.second) == "true") {
+        managed_import_mode_ = true;
+      } else if (Lowercase(option.second) == "false") {
+        managed_import_mode_ = false;
+      } else {
+        *error = "invalid value for explicit_import option; must be true or false, got " + option.second;
+        return false;
+      }
+      // ImportPaths paths = ImportPaths();
+      // const auto parse_status =  google::protobuf::util::JsonStringToMessage(option.second, &paths);
+      // if (!parse_status.ok()) {
+      //   *error = "options: explicit_imports is not a valid JSON encoding of com.github.grpc.grpc_web.generator.ImportPaths: " + parse_status.message().as_string() + "\n: " + option.second;
+      //   return false;
+      // }
+      // for (const ImportPaths_Entry &entry :
+      //   paths.entries()) {
+      //     this->proto_name_to_import_path_[entry.proto_import_path()] = entry.js_import_path();
+      // }
+    } else if (HasPrefixString(option.first, "explicit_import__")) {
+      const string proto_filename = StripPrefixString(option.first, "explicit_import__");
+      proto_name_to_import_path_[proto_filename] = option.second;
     } else {
       *error = "unsupported option: " + option.first;
       return false;
     }
+  }
+
+  if (this->proto_name_to_import_path_.size() > 0 && !managed_import_mode_) {
+    *error = "explicit_import__ arguments passed, but no explicit_import=true option was passed; add an explicit_import=true option to the request to fix the problem";
+    return false;
   }
 
   if (mode_.empty()) {
@@ -1519,6 +1563,33 @@ string GeneratorOptions::OutputFile(const string& proto_file) const {
   return StripProto(proto_file) + "_grpc_web_pb.js";
 }
 
+string GeneratorOptions::ImportPath(
+  const FileDescriptor* generated_code_file,
+  const FileDescriptor* dep_file) const {
+  if (this->managed_import_mode_) {
+    const auto got = this->proto_name_to_import_path_.find(dep_file->name());
+    if (got == this->proto_name_to_import_path_.end()) {
+      return "";
+    }
+    return got->second;
+  }
+  return GetRootPath(generated_code_file->name(), dep_file->name()) + StripProto(dep_file->name());
+}
+
+bool GeneratorOptions::CheckImports(const FileDescriptor* generated_code_file, string* error) const {
+  if (!this->managed_import_mode_) {
+    return true;
+  }
+  for (const auto& entry : GetAllMessages(generated_code_file)) {
+    const auto& dep_file = entry.second->file();
+    if (ImportPath(generated_code_file, dep_file) == "") {
+      *error = "no explicit import found for proto " + dep_file->name();
+      return false;
+    }
+  }
+  return true;
+}
+
 class GrpcCodeGenerator : public CodeGenerator {
  public:
   GrpcCodeGenerator() {}
@@ -1535,6 +1606,12 @@ class GrpcCodeGenerator : public CodeGenerator {
     if (!generator_options.ParseFromOptions(parameter, error)) {
       return false;
     }
+
+    // Ensure all of the dependencies have explicit import entries.
+    if (!generator_options.CheckImports(file, error)) {
+      return false;
+    }
+
 
     std::map<string, string> vars;
     std::map<string, string> method_descriptors;
@@ -1593,7 +1670,7 @@ class GrpcCodeGenerator : public CodeGenerator {
     PrintFileHeader(&printer, vars);
 
     if (ImportStyle::TYPESCRIPT == generator_options.import_style()) {
-      PrintTypescriptFile(&printer, file, vars);
+      PrintTypescriptFile(&printer, file, generator_options, vars);
       return true;
     }
 
@@ -1722,7 +1799,7 @@ class GrpcCodeGenerator : public CodeGenerator {
           context->Open(grpcweb_dts_file_name));
       Printer grpcweb_dts_printer(grpcweb_dts_output.get(), '$');
 
-      PrintGrpcWebDtsFile(&grpcweb_dts_printer, file);
+      PrintGrpcWebDtsFile(&grpcweb_dts_printer, file, generator_options);
     }
 
     if (generator_options.generate_closure_es6()) {
