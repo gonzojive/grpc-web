@@ -1467,7 +1467,8 @@ GeneratorOptions::GeneratorOptions()
       generate_dts_(false),
       generate_closure_es6_(false),
       multiple_files_(false),
-      goog_promise_(false) {}
+      goog_promise_(false),
+      managed_import_mode_(false) {}
 
 bool GeneratorOptions::ParseFromOptions(const string& parameter,
                                         string* error) {
