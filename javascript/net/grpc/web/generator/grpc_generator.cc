@@ -120,11 +120,6 @@ class GeneratorOptions {
   bool generate_closure_es6_;
   bool multiple_files_;
   bool goog_promise_;
-  // Maps from proto import path to JS/TS import path of that file.
-  // If in managed_import_mode and a necessary import is not in this map,
-  // compilation fails.
-  std::map<string, string> proto_name_to_import_path_;
-  bool managed_import_mode_;
 };
 
 string GetProtocVersion(GeneratorContext* context) {
@@ -1467,8 +1462,7 @@ GeneratorOptions::GeneratorOptions()
       generate_dts_(false),
       generate_closure_es6_(false),
       multiple_files_(false),
-      goog_promise_(false),
-      managed_import_mode_(false) {}
+      goog_promise_(false) {}
 
 bool GeneratorOptions::ParseFromOptions(const string& parameter,
                                         string* error) {
@@ -1508,37 +1502,10 @@ bool GeneratorOptions::ParseFromOptions(
       plugins_ = option.second;
     } else if ("goog_promise" == option.first) {
       goog_promise_ = "True" == option.second;
-    } else if ("explicit_imports" == option.first) {
-      if (Lowercase(option.second) == "true") {
-        managed_import_mode_ = true;
-      } else if (Lowercase(option.second) == "false") {
-        managed_import_mode_ = false;
-      } else {
-        *error = "invalid value for explicit_import option; must be true or false, got " + option.second;
-        return false;
-      }
-      // ImportPaths paths = ImportPaths();
-      // const auto parse_status =  google::protobuf::util::JsonStringToMessage(option.second, &paths);
-      // if (!parse_status.ok()) {
-      //   *error = "options: explicit_imports is not a valid JSON encoding of com.github.grpc.grpc_web.generator.ImportPaths: " + parse_status.message().as_string() + "\n: " + option.second;
-      //   return false;
-      // }
-      // for (const ImportPaths_Entry &entry :
-      //   paths.entries()) {
-      //     this->proto_name_to_import_path_[entry.proto_import_path()] = entry.js_import_path();
-      // }
-    } else if (HasPrefixString(option.first, "explicit_import__")) {
-      const string proto_filename = StripPrefixString(option.first, "explicit_import__");
-      proto_name_to_import_path_[proto_filename] = option.second;
     } else {
       *error = "unsupported option: " + option.first;
       return false;
     }
-  }
-
-  if (this->proto_name_to_import_path_.size() > 0 && !managed_import_mode_) {
-    *error = "explicit_import__ arguments passed, but no explicit_import=true option was passed; add an explicit_import=true option to the request to fix the problem";
-    return false;
   }
 
   if (mode_.empty()) {
@@ -1567,27 +1534,10 @@ string GeneratorOptions::OutputFile(const string& proto_file) const {
 string GeneratorOptions::ImportPath(
   const FileDescriptor* generated_code_file,
   const FileDescriptor* dep_file) const {
-  if (this->managed_import_mode_) {
-    const auto got = this->proto_name_to_import_path_.find(dep_file->name());
-    if (got == this->proto_name_to_import_path_.end()) {
-      return "";
-    }
-    return got->second;
-  }
   return GetRootPath(generated_code_file->name(), dep_file->name()) + StripProto(dep_file->name());
 }
 
 bool GeneratorOptions::CheckImports(const FileDescriptor* generated_code_file, string* error) const {
-  if (!this->managed_import_mode_) {
-    return true;
-  }
-  for (const auto& entry : GetAllMessages(generated_code_file)) {
-    const auto& dep_file = entry.second->file();
-    if (ImportPath(generated_code_file, dep_file) == "") {
-      *error = "no explicit import found for proto " + dep_file->name();
-      return false;
-    }
-  }
   return true;
 }
 
